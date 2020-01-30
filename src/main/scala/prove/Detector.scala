@@ -15,13 +15,18 @@ object DetectorApp extends App {
 
   val ctxDetector = TcpContext("ctx2", 8023).connectWith("localhost", 8018).connectWith("localhost", 8016)
 
+  //val lol = ExternalContext("localhost", 8018)
+  //val asd = ExternalQActor("asd", lol)
+
   /** External QActors **/
   val smartrobot = "smartrobot"
   val grabber = "grabber"
   val obstacleClassifier = "obstacleclassifier"
   val plasticBox = "plasticbox"
 
-  val planner: MatrixPlanner = new MatrixPlanner(((1, 1), South)) with DummyMatrixPlanner
+  val planner: MatrixPlanner = new MatrixPlanner(
+    robotInitialPosition = ((1, 1), South),
+    robotEmptyPosition = ((3, 1), North)) with DummyMatrixPlanner
 
 
   object Detector extends QActor(ctxDetector) {
@@ -43,97 +48,103 @@ object DetectorApp extends App {
     }
 
     def idle: State = onEnter {
-      println("Waiting for a command")
+      resetStackOfStates()
+      println("Waiting for a command...")
     } onDispatch {
       case Explore(_) => transit to exploring
       case Terminate(_) => transit to terminating
+      case Suspend(_) => transit to goHome
     }
 
     def exploring: State = stepBackIfNecessary and onEnter {
-      println("Exploring...")
-      if (!stepBackNeeded) {
-        if (beforeEmptyPos.isDefined) {
-          val plan = planner.generateSafePlanFor(beforeEmptyPos.get._1, beforeEmptyPos.get._2)
-          dispatch(ExecutePlan(plan)) to mySelf
-          transit to executingPlan
-          beforeEmptyPos = None
-        } else {
-          lastObstacle match {
-            case Some(Obstacle(_, false)) if currentBottlesCount < MAX_BOTTLE => //grab obstacle and back step, then exploring
-              request(Grab("x")) to grabber
-              planner.setObjectAhead(Clean)
-              transit to ("wait grabbed" onMsg {
-                case Grabbed(success) =>
-                  if (success) {
-                    currentBottlesCount = currentBottlesCount + 1
-                  }
-                  stepBackNeeded = true
-                  lastObstacle = None
-                  transit to previous
-              })
+      if (beforeEmptyPos.isDefined) {
+        println("Returning to beforeEmptyPos...")
+        transit to returnToBeforeEmptyPos
+      } else {
+        lastObstacle match {
+          case Some(Obstacle(_, false)) if currentBottlesCount < MAX_BOTTLE => //grab obstacle and back step, then exploring
+            transit to grab
 
-            case Some(Obstacle(_, false)) if currentBottlesCount >= MAX_BOTTLE =>
-              stepBackNeeded = true
-              beforeEmptyPos = Some(planner.currentPosition)
-              transit to emptyDetector
+          case Some(Obstacle(_, false)) if currentBottlesCount >= MAX_BOTTLE => //back step and go to empty
+            stepBackNeeded = true
+            beforeEmptyPos = Some(planner.currentPosition)
+            transit to emptyDetector
 
-            case None => //explore unknown cell if possible, otherwise terminating
-              planner.printMatrix()
-              val plan = planner.generatePlanForExplore()
+          case None => //explore unknown cell if possible, otherwise terminating
+            planner.printMatrix()
+            val plan = planner.generatePlanForExplore()
               if (plan.nonEmpty) {
+                println("Exploring...")
                 dispatch(ExecutePlan(plan)) to mySelf
                 transit to executingPlan
               } else {
-                transit to terminating
+                transit to terminating //TODO: not defined by user
                 println("No more to explore")
               }
-          }
         }
       }
     }
 
     def terminating: State = onEnter {
-      println("Terminating...")
       if (currentBottlesCount > 0) {
         transit to emptyDetector
+      } else if (planner.currentPosition != planner.robotInitialPosition) {
+        transit to goHome
       } else {
-        val plan = planner.generatePlanForTerminate()
-        if (plan.isEmpty) {
-          transit to idle
+        println("Terminated.")
+        transit to idle
+      }
+    }
+
+    def goHome: State = onEnter {
+      val plan = planner.generatePlanForHome()
+      if (plan.isEmpty) {
+        transit to previous
+      } else {
+        println("Going home...")
+        dispatch(ExecutePlan(plan)) to mySelf
+        transit to executingPlan
+      }
+    }
+
+    def emptyDetector: State = stepBackIfNecessary and onEnter {
+      if (currentBottlesCount == 0) {
+        transit to previous //return to caller
+      } else {
+        val plan = planner.generatePlanForPlasticBox()
+        planner.printMatrix()
+        if (plan.isEmpty) { //I'm at plstaticBox
+          println("Empting...")
+          request(ThrowAway(currentBottlesCount)) to plasticBox
+          transit to ("wait for throwed" onReply {
+            case Throwed(count) if count <= 0 =>
+              println("Failed. Wait for supervisor")
+              transit to ("wait for supervisor" onDispatch {
+                case Continue(_) =>
+                  transit to previous //wait for throwed
+                  transit to previous //emptyDetector
+              })
+            case Throwed(count) if count > 0 =>
+              transit to previous //emptyDetector
+              currentBottlesCount = currentBottlesCount - count
+              println("Detector is now empty")
+          })
         } else {
+          println("Going to plastixBox...")
           dispatch(ExecutePlan(plan)) to mySelf
           transit to executingPlan
         }
       }
     }
 
-    def emptyDetector: State = stepBackIfNecessary and onEnter {
-      println("Empting...")
-      if (!stepBackNeeded) {
-        if (currentBottlesCount == 0) {
-          transit to previous //return to caller
-        } else {
-          val plan = planner.generatePlanForPlasticBox()
-          if (plan.isEmpty) { //I'm at plstaticBox
-            request(ThrowAway(currentBottlesCount)) to plasticBox
-            transit to ("wait for throwed" onReply {
-              case Throwed(count) if count <= 0 =>
-                println("Wait for supervisor")
-                transit to ("wait for supervisor" onDispatch {
-                  case Continue(_) =>
-                    transit to previous //wait for throwed
-                    transit to previous //emptyDetector
-                })
-              case Throwed(count) if count > 0 =>
-                transit to previous //emptyDetector
-                currentBottlesCount = currentBottlesCount - count
-                println("Detector is now empty")
-            })
-          } else {
-            dispatch(ExecutePlan(plan)) to mySelf
-            transit to executingPlan
-          }
-        }
+    def returnToBeforeEmptyPos: State = onEnter {
+      if (beforeEmptyPos.isDefined) {
+        val plan = planner.generateSafePlanFor(beforeEmptyPos.get._1, beforeEmptyPos.get._2)
+        dispatch(ExecutePlan(plan)) to mySelf
+        transit to executingPlan
+        beforeEmptyPos = None
+      } else {
+        transit to previous
       }
     }
 
@@ -146,9 +157,27 @@ object DetectorApp extends App {
             stepBackNeeded = false
             lastObstacle = None
         })
+        interruptAndTransit()
       }
     }
 
+    def grab: State = onEnter {
+      if (lastObstacle.isDefined) {
+        request(Grab("x")) to grabber
+        planner.setObjectAhead(Clean)
+        transit to ("wait grabbed" onMsg {
+          case Grabbed(success) =>
+            if (success) {
+              currentBottlesCount = currentBottlesCount + 1
+            }
+            stepBackNeeded = true
+            lastObstacle = None
+            transit to previous
+        })
+      } else {
+        transit to previous
+      }
+    }
 
     def executingPlan: State = onMsg {
       case ExecutePlan(plan) if plan.isEmpty || lastObstacle.isDefined =>
@@ -166,7 +195,7 @@ object DetectorApp extends App {
     }
 
     //when transit to previous should be necessary to stepback if lastObstacle is defined
-    def executeMove: State = onDispatch {
+    def executeMove: State = stepBackIfNecessary and onDispatch {
       case ExecuteMove(move) if move == "w" =>
         lastObstacle = None
         request(Step(330)) to smartrobot
@@ -196,13 +225,9 @@ object DetectorApp extends App {
         planner.setObjectAhead(obstacle)
         lastObstacle = Some(obstacle)
         stepBackNeeded = obstacle.isStatic
+        println("Found obstacle: " + name)
         transit to previous
-        println("Found obstacle! " + name)
         unstash()
-    }
-
-    override protected def stateChanging(oldState: State, newState: State): Unit = {
-      //println(s"$name: $oldState -> $newState")
     }
   }
 

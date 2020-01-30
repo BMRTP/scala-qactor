@@ -9,6 +9,7 @@ import qactor.message._
 import utils.ExtensionMethods._
 
 import scala.concurrent.duration.Duration
+import scala.util.control.Breaks._
 
 object QActor {
   val MAX_QUEUE_LENGTH: Int = 10000
@@ -69,7 +70,9 @@ abstract class QActor(final val name: String, private val context: Context) {
             currentMessage = Some(m)
             currentState.onMessageAction match {
               case Some(body) if body isDefinedAt m =>
-                body(m)
+                breakable {
+                  body(m)
+                }
                 currentMessage = None
                 gotoNextStateIfPresent()
               case _ =>
@@ -100,10 +103,14 @@ abstract class QActor(final val name: String, private val context: Context) {
 
   /** * State transitions ***/
 
+  case class Back() extends Object
+
+  case class Now() extends Object
+
   trait Transitor {
     def to(state: State): Unit
 
-    def to(state: (State, Boolean)): Unit
+    def to(back: Back): Unit
   }
 
   protected final def transit: Transitor = new Transitor {
@@ -115,12 +122,16 @@ abstract class QActor(final val name: String, private val context: Context) {
 
     override def to(state: State): Unit = transitIfPossible(state, isBackwardTransition = false)
 
-    override def to(tuple: (State, Boolean)): Unit = tuple match {
-      case (state, isBackwardTransition) => transitIfPossible(state, isBackwardTransition)
-    }
+    override def to(back: Back): Unit = transitIfPossible(stateStack.pop(), isBackwardTransition = true)
   }
 
-  protected final def previous: (State, Boolean) = (stateStack.pop(), true) //todo: fix with lazy consume
+  protected final def previous: Back = Back()
+
+  protected final def interruptAndTransit(): Unit = if (nextState.isDefined) {
+    break()
+  } else {
+    throw new Exception("You must first specify a transition")
+  }
 
   protected final def canTransitBack: Boolean = stateStack.nonEmpty
 
@@ -140,7 +151,9 @@ abstract class QActor(final val name: String, private val context: Context) {
       transitionEnabled = true
       currentState = state
       executionStage = executionStage + 1
-      state.enterAction.foreach(body => body())
+      breakable {
+        state.enterAction.foreach(body => body())
+      }
       timeoutFuture = setTimeout(state)
     }
 
@@ -279,4 +292,8 @@ abstract class QActor(final val name: String, private val context: Context) {
     case Some(value) => value.from
     case None => ""
   }
+
+  protected final def stackOfStates: Seq[State] = stateStack.toSeq
+
+  protected final def resetStackOfStates(): Unit = stateStack.clear()
 }

@@ -2,7 +2,7 @@ package prove
 
 import utils.ExtensionMethods._
 
-abstract class MatrixPlanner(robotInitialPosition: ((Int, Int), Pole)) {
+abstract class MatrixPlanner(val robotInitialPosition: ((Int, Int), Pole), val robotEmptyPosition: ((Int, Int), Pole)) {
 
   private val map: scala.collection.mutable.Map[(Int, Int), MapObject] = scala.collection.mutable.Map()
 
@@ -100,9 +100,9 @@ abstract class MatrixPlanner(robotInitialPosition: ((Int, Int), Pole)) {
       (res._2, res._1._2)
   }
 
-  def generatePlanForTerminate(): Seq[String] = generateSafePlanFor(robotInitialPosition._1, robotInitialPosition._2)
+  def generatePlanForHome(): Seq[String] = generateSafePlanFor(robotInitialPosition._1, robotInitialPosition._2)
 
-  def generatePlanForPlasticBox(): Seq[String] = generatePlanForTerminate()
+  def generatePlanForPlasticBox(): Seq[String] = generateSafePlanFor(robotEmptyPosition._1, robotEmptyPosition._2)
 
 
   def generatePlanForExplore(): Seq[String] =
@@ -117,7 +117,10 @@ abstract class MatrixPlanner(robotInitialPosition: ((Int, Int), Pole)) {
     }
 
   def generateSafePlanFor(pos: (Int, Int), direction: Pole): Seq[String] = {
-    val path = findPath(currentPosition._1, pos, v => v == Clean, 0, 15)
+    var path = findPath(currentPosition._1, pos, v => v == Clean, 0, 15)
+    if(path.isEmpty && pos != currentPosition._1) {
+      path = findPath(currentPosition._1, pos, v => v == Clean || v == Unknown, 0, 15)
+    }
     val plan = pathToPlan(path)
     plan._1 ++ getRotationPlan(plan._2, direction)
   }
