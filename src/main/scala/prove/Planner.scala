@@ -170,29 +170,30 @@ abstract class MatrixPlanner(val robotInitialPosition: ((Int, Int), Pole), val r
     case (pos, rot) => setPosition(pos, rot.right)
   }
 
-  def printMatrix(): Unit = {
+  def mapString: String = {
     val rows = map.map(_._1._2).max
     val columns = map.map(_._1._1).max
     var r = map.map(_._1._2).min
     var c = map.map(_._1._1).min
-    println("MAP:")
+    val stringBuilder = new StringBuilder()
     while (r <= rows) {
       c = map.map(_._1._1).min
       while (c <= columns) {
         val v = getMapAt((c, r))
         val char = v match {
-          case Clean => "0"
-          case Obstacle(name, true) => "X"
-          case Obstacle(name, false) => "B"
-          case Robot => "r"
-          case Unknown => " "
+          case Clean => '0'
+          case Obstacle(name, true) => 'X'
+          case Obstacle(name, false) => 'B'
+          case Robot => 'r'
+          case Unknown => ' '
         }
-        print(char)
+        stringBuilder.addOne(char)
         c = c + 1
       }
       r = r + 1
-      print("\n")
+      stringBuilder.addOne('\n')
     }
+    stringBuilder.toString
   }
 }
 

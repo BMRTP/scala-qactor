@@ -1,6 +1,7 @@
 package prove
 
 import prove.Messages._
+import prove.PropertyImplicits._
 import qactor.State._
 import qactor.context.TcpContext
 import qactor.message.Deserializer
@@ -27,10 +28,17 @@ object DetectorApp extends App {
     robotEmptyPosition = ((0, 0), North)) with DummyMatrixPlanner
 
 
-  object Detector extends QActor(ctxDetector) {
+  object Detector extends QActor(ctxDetector) with CoapObservableProperties {
+
+    override def coapRoot: String = name
+
+    override def coapServer: String = "coap://localhost:5683"
 
     val MAX_BOTTLE = 1
-    var currentBottlesCount = 0
+    val SpaceAvailable: Property[Int] = observableProperty(MAX_BOTTLE, _.toString, _.toInt)
+    val currentTask: Property[String] = observableProperty("") //TODO
+    val waitingForSupervisor: Property[Boolean] = observableProperty(false, _.toString, _.toBoolean)
+    val RoomMap: Property[String] = observableProperty("")
 
     var beforeEmptyPos: Option[((Int, Int), Pole)] = None
     var lastObstacle: Option[Obstacle] = None
@@ -60,16 +68,16 @@ object DetectorApp extends App {
         transit to returnToBeforeEmptyPos
       } else {
         lastObstacle match {
-          case Some(Obstacle(_, false)) if currentBottlesCount < MAX_BOTTLE => //grab obstacle and back step, then exploring
+          case Some(Obstacle(_, false)) if SpaceAvailable > 0 => //grab obstacle and back step, then exploring
             transit to grab
 
-          case Some(Obstacle(_, false)) if currentBottlesCount >= MAX_BOTTLE => //back step and go to empty
+          case Some(Obstacle(_, false)) if SpaceAvailable <= 0 => //back step and go to empty
             stepBackNeeded = true
             beforeEmptyPos = Some(planner.currentPosition)
             transit to emptyDetector
 
           case None => //explore unknown cell if possible, otherwise terminating
-            planner.printMatrix()
+            println(planner.mapString)
             val plan = planner.generatePlanForExplore()
             println("Going to: " + planner.nextCellToExplore)
             if (plan.nonEmpty) {
@@ -85,7 +93,7 @@ object DetectorApp extends App {
     }
 
     def terminating: State = onEnter {
-      if (currentBottlesCount > 0) {
+      if (SpaceAvailable < MAX_BOTTLE) {
         transit to emptyDetector
       } else if (planner.currentPosition != planner.robotInitialPosition) {
         transit to goHome
@@ -107,27 +115,29 @@ object DetectorApp extends App {
     }
 
     def emptyDetector: State = stepBackIfNecessary and onEnter {
-      if (currentBottlesCount == 0) {
+      if (SpaceAvailable >= MAX_BOTTLE) {
         transit to previous //return to caller
       } else {
 
         val plan = planner.generatePlanForPlasticBox()
-        planner.printMatrix()
+        println(planner.mapString)
         if (plan.isEmpty) { //I'm at plstaticBox
           println("Empting...")
-          request(ThrowAway(currentBottlesCount)) to plasticbox
+          request(ThrowAway(MAX_BOTTLE - SpaceAvailable)) to plasticbox
           transit to ("wait for throwed" onReply {
             case Throwed(count) if count <= 0 =>
               println("Failed. Wait for supervisor")
+              waitingForSupervisor.set(true)
               transit to ("wait for supervisor" onDispatch {
                 case Continue(_) =>
+                  waitingForSupervisor.set(false)
                   transit to previous //wait for throwed
                   transit to previous //emptyDetector
               })
             case Throwed(count) if count > 0 =>
               transit to previous //emptyDetector
-              currentBottlesCount = currentBottlesCount - count
-              println("Detector is now empty")
+              SpaceAvailable.set(SpaceAvailable + count)
+              println("Detector is now empty, space available: " + SpaceAvailable)
           } timeout((4 second) -> { transit to previous }))
         } else {
           println("Going to plastixBox...")
@@ -165,10 +175,11 @@ object DetectorApp extends App {
       if (lastObstacle.isDefined) {
         request(Grab("x")) to grabber
         planner.setObjectAhead(Clean)
+        RoomMap.set(planner.mapString)
         transit to ("wait grabbed" onMsg {
           case Grabbed(success) =>
             if (success) {
-              currentBottlesCount = currentBottlesCount + 1
+              SpaceAvailable.set(SpaceAvailable - 1)
             }
             stepBackNeeded = true
             lastObstacle = None
@@ -214,6 +225,7 @@ object DetectorApp extends App {
       case StepDone(_) =>
         if (lastObstacle.isEmpty) {
           planner.moveAhead()
+          RoomMap.set(planner.mapString)
         }
         transit to previous
         unstash()
@@ -223,6 +235,7 @@ object DetectorApp extends App {
       case ObstacleType(name) =>
         val obstacle = Obstacle(name, !name.contains("bottle"))
         planner.setObjectAhead(obstacle)
+        RoomMap.set(planner.mapString)
         lastObstacle = Some(obstacle)
         stepBackNeeded = obstacle.isStatic
         println("Found obstacle: " + name)
