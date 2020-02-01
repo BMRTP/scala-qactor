@@ -3,19 +3,30 @@ package qactor.context
 import java.io.{BufferedReader, DataOutputStream, InputStreamReader}
 import java.net.{ServerSocket, Socket}
 
+import qactor.QActor
 import qactor.message._
 
 import scala.util.Try
 
+object TcpContext {
+  def apply(contextName: String): TcpContext = TcpContext(contextName, 0)
+
+  def apply()(implicit contextName: sourcecode.Name): TcpContext = TcpContext(contextName.value, 0)
+
+  def apply(port: Int)(implicit contextName: sourcecode.Name): TcpContext = TcpContext(contextName.value, port)
+}
 case class TcpContext(override val contextName: String, port: Int) extends Context {
 
-  private val welcomeSocket = new ServerSocket(port)
   private var connections = Map[String, (Socket, DataOutputStream)]()
   private val connectionsLock = new Object()
+  private var extensions: Seq[TcpContext] = Seq()
 
-  executor.execute { () =>
-    while (true) {
-      handleSocket(welcomeSocket.accept())
+  if (port != 0) {
+    val welcomeSocket = new ServerSocket(port)
+    executor.execute { () =>
+      while (true) {
+        handleSocket(welcomeSocket.accept())
+      }
     }
   }
 
@@ -29,6 +40,22 @@ case class TcpContext(override val contextName: String, port: Int) extends Conte
       }
     })
     this
+  }
+
+  def extendTo(hostname: String, port: Int): TcpContext = {
+    val ctx = TcpContext(contextName + " extension").connectWith(hostname, port)
+    extensions = extensions :+ ctx
+    ctx
+  }
+
+  override def register(qactor: QActor): Unit = {
+    extensions.foreach(x => x.register(qactor))
+    super.register(qactor)
+  }
+
+  override def unregister(qactor: QActor): Unit = {
+    extensions.foreach(x => x.unregister(qactor))
+    super.unregister(qactor)
   }
 
   private def handleSocket(socket: Socket): Unit = {
@@ -45,8 +72,10 @@ case class TcpContext(override val contextName: String, port: Int) extends Conte
       var continue = true
       while (continue) {
         val msg = inFromContext.readLine()
-        Deserializer(msg) match {
-          case Some(value) => digest(value)
+        Deserializer(msg, this) match {
+          case Some(value) => if (!digest(value)) {
+            println(s"$contextName: message $value dropped")
+          }
           case None =>
             println(s"$contextName: a message from $connectionId was malformed ($msg)")
             dropConnection(connectionId)

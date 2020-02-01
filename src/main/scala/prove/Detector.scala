@@ -4,7 +4,7 @@ import prove.Messages._
 import qactor.State._
 import qactor.context.TcpContext
 import qactor.message.Deserializer
-import qactor.{QActor, State}
+import qactor.{ExternalQActor, QActor, State}
 
 import scala.concurrent.duration._
 import scala.language.postfixOps
@@ -13,20 +13,18 @@ object DetectorApp extends App {
 
   Deserializer.registerAll("prove.Messages")
 
-  val ctxDetector = TcpContext("ctx2", 8023).connectWith("localhost", 8018).connectWith("localhost", 8016)
+  val ctxDetector = TcpContext(8023)
+  val ctxRobot = ctxDetector.extendTo("localhost", 8018)
+  val ctxPlasticBox = ctxDetector.extendTo("localhost", 8016)
 
-  //val lol = ExternalContext("localhost", 8018)
-  //val asd = ExternalQActor("asd", lol)
-
-  /** External QActors **/
-  val smartrobot = "smartrobot"
-  val grabber = "grabber"
-  val obstacleClassifier = "obstacleclassifier"
-  val plasticBox = "plasticbox"
+  val smartrobot = ExternalQActor(ctxRobot)
+  val grabber = ExternalQActor(ctxRobot)
+  val obstacleclassifier = ExternalQActor(ctxRobot)
+  val plasticbox = ExternalQActor(ctxPlasticBox)
 
   val planner: MatrixPlanner = new MatrixPlanner(
-    robotInitialPosition = ((1, 1), South),
-    robotEmptyPosition = ((3, 1), North)) with DummyMatrixPlanner
+    robotInitialPosition = ((0, 0), South),
+    robotEmptyPosition = ((0, 0), North)) with DummyMatrixPlanner
 
 
   object Detector extends QActor(ctxDetector) {
@@ -41,9 +39,9 @@ object DetectorApp extends App {
 
     override protected def initialState: State = onEnter {
       dispatch(Cmd("a")) to smartrobot
-      wait(2 seconds)
+      wait(4 seconds)
       dispatch(Cmd("d")) to smartrobot
-      wait(2 seconds)
+      wait(4 seconds)
       transit to exploring
     }
 
@@ -73,14 +71,15 @@ object DetectorApp extends App {
           case None => //explore unknown cell if possible, otherwise terminating
             planner.printMatrix()
             val plan = planner.generatePlanForExplore()
-              if (plan.nonEmpty) {
-                println("Exploring...")
-                dispatch(ExecutePlan(plan)) to mySelf
-                transit to executingPlan
-              } else {
-                transit to terminating //TODO: not defined by user
-                println("No more to explore")
-              }
+            println("Going to: " + planner.nextCellToExplore)
+            if (plan.nonEmpty) {
+              println("Exploring...")
+              dispatch(ExecutePlan(plan)) to mySelf
+              transit to executingPlan
+            } else {
+              transit to terminating
+              println("No more to explore")
+            }
         }
       }
     }
@@ -111,11 +110,12 @@ object DetectorApp extends App {
       if (currentBottlesCount == 0) {
         transit to previous //return to caller
       } else {
+
         val plan = planner.generatePlanForPlasticBox()
         planner.printMatrix()
         if (plan.isEmpty) { //I'm at plstaticBox
           println("Empting...")
-          request(ThrowAway(currentBottlesCount)) to plasticBox
+          request(ThrowAway(currentBottlesCount)) to plasticbox
           transit to ("wait for throwed" onReply {
             case Throwed(count) if count <= 0 =>
               println("Failed. Wait for supervisor")
@@ -128,7 +128,7 @@ object DetectorApp extends App {
               transit to previous //emptyDetector
               currentBottlesCount = currentBottlesCount - count
               println("Detector is now empty")
-          })
+          } timeout((4 second) -> { transit to previous }))
         } else {
           println("Going to plastixBox...")
           dispatch(ExecutePlan(plan)) to mySelf
@@ -219,7 +219,7 @@ object DetectorApp extends App {
         unstash()
       case StepFail(ms) =>
         lastStepFailTime = ms
-        request(GetObstacleType("x")) to obstacleClassifier
+        request(GetObstacleType("x")) to obstacleclassifier
       case ObstacleType(name) =>
         val obstacle = Obstacle(name, !name.contains("bottle"))
         planner.setObjectAhead(obstacle)

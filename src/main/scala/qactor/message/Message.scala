@@ -1,5 +1,6 @@
 package qactor.message
 
+import qactor.AbstractQActor
 import qactor.message.InteractionType.InteractionType
 
 
@@ -13,7 +14,7 @@ trait Message {
 
   def payload: String = s"$id(${params.mkString(", ")})"
 
-  def toMessage(interaction: InteractionType, from: String, to: String): QakMessage = QakMessage(interaction, this, from, to)
+  def toMessage(interaction: InteractionType, from: AbstractQActor, to: AbstractQActor): QakMessage = QakMessage(interaction, this, from, to)
 
   override def toString: String = payload
 }

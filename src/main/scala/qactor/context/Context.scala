@@ -26,10 +26,10 @@ trait Context {
   protected def digest(message: QakMessage): Boolean =
     message match {
       case QakMessage(Event, _, _, _) =>
-        localQActor.filter(_._1 != message.from).foreach(_._2.accept(message))
+        localQActor.filter(_._1 != message.from.name).foreach(_._2.accept(message))
         false
       case _ =>
-        val dest = localQActor.filter(_._1 == message.to).take(1)
+        val dest = localQActor.filter(_._1 == message.to.name).take(1)
         if (dest.isEmpty) {
           //println(contextName + ": " + message + " has no destination in this context")
           false

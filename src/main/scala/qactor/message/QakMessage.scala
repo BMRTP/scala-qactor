@@ -1,5 +1,6 @@
 package qactor.message
 
+import qactor.AbstractQActor
 import qactor.message.InteractionType.InteractionType
 
 object QakMessage {
@@ -12,10 +13,10 @@ object QakMessage {
   }
 }
 
-case class QakMessage(interaction: InteractionType, message: Message, from: String, to: String) {
+case class QakMessage(interaction: InteractionType, message: Message, from: AbstractQActor, to: AbstractQActor) {
   val id: Long = QakMessage.getNextId
 
-  def serialized: String = s"msg(${message.id}, ${interaction.toString.toLowerCase}, $from, $to, ${message.payload}, $id)"
+  def serialized: String = s"msg(${message.id}, ${interaction.toString.toLowerCase}, ${from.name}, ${to.name}, ${message.payload}, $id)"
 
   override def toString: String = serialized
 }

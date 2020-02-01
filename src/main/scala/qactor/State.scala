@@ -1,5 +1,6 @@
 package qactor
 
+import qactor.State.Lazy
 import qactor.message.InteractionType._
 import qactor.message._
 
@@ -27,20 +28,25 @@ object State {
 
   def onReply(body: PartialFunction[Message, Unit])(implicit name: sourcecode.Name): State = name.value onReply body
 
-  def timeout(duration: => (Duration, State))(implicit name: sourcecode.Name): State = name.value timeout duration
+  def timeout(duration: (Duration, Lazy[Unit]))(implicit name: sourcecode.Name): State = name.value timeout duration
 
   implicit class stringToEmptyState(v: String) extends State(v, None, None, None, None)
 
+  implicit class Lazy[T](wrp: => T) {
+    lazy val value: T = wrp
+  }
 }
+
+
 
 case class State(name: String, enterAction: Option[() => Unit],
                  exitAction: Option[() => Unit],
                  onMessageAction: Option[PartialFunction[QakMessage, Unit]],
-                 timeoutV: Option[() => (Duration, State)]) {
+                 timeoutV: Option[(Duration, Lazy[Unit])]) {
 
   override def toString: String = name
 
-  def timeout(duration: => (Duration, State)): State = this.copy(timeoutV = Some(() => duration)) //TODO keep smallest
+  def timeout(duration: (Duration, Lazy[Unit])): State = this.copy(timeoutV = Some(duration)) //TODO keep smallest
 
   def onEnter(body: => Unit): State = this.copy(enterAction = Some(() => {
     this.enterAction.foreach(body => body())

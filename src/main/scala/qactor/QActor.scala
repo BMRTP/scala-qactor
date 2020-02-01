@@ -17,7 +17,7 @@ object QActor {
   implicit def qactorToString(qactor: QActor) = qactor.name
 }
 
-abstract class QActor(final val name: String, private val context: Context) {
+abstract class QActor(final val name: String, private val context: Context) extends AbstractQActor {
 
   def this(context: Context)(implicit name: sourcecode.Name) {
     this(name.value.toLowerCase, context)
@@ -25,7 +25,7 @@ abstract class QActor(final val name: String, private val context: Context) {
 
   private trait AcceptedEvent
 
-  private case class InternalTimeout(state: State, executionStage: Long) extends AcceptedEvent
+  private case class InternalTimeout(body: Lazy[Unit], executionStage: Long) extends AcceptedEvent
 
   private case class IngoingMessage(message: QakMessage) extends AcceptedEvent
 
@@ -62,8 +62,10 @@ abstract class QActor(final val name: String, private val context: Context) {
           queue.dequeue
         }
         message match {
-          case InternalTimeout(newState, es) => if (es == executionStage) {
-            transit to newState
+          case InternalTimeout(body, es) => if (es == executionStage) {
+            breakable {
+              body.value
+            }
             gotoNextStateIfPresent()
           }
           case IngoingMessage(m) =>
@@ -177,11 +179,11 @@ abstract class QActor(final val name: String, private val context: Context) {
     timeoutFuture = setTimeout(state)
   }
 
-  private def setTimeout(state: State): Option[ScheduledFuture[_]] = state.timeoutV.map(_ ()).map {
-    case (duration, state) =>
+  private def setTimeout(state: State): Option[ScheduledFuture[_]] = state.timeoutV.map {
+    case (duration, body) =>
       timerExecutor.schedule(() => {
         timeoutFuture = None
-        acceptTimeout(state)
+        acceptTimeout(body)
       }, duration)
   }
 
@@ -189,7 +191,7 @@ abstract class QActor(final val name: String, private val context: Context) {
 
   final def accept(message: QakMessage): Unit = accept(IngoingMessage(message))
 
-  private def acceptTimeout(newState: State): Unit = accept(InternalTimeout(newState, executionStage))
+  private def acceptTimeout(body: Lazy[Unit]): Unit = accept(InternalTimeout(body, executionStage))
 
   private def accept(event: AcceptedEvent): Unit =
     queue.synchronized {
@@ -207,13 +209,13 @@ abstract class QActor(final val name: String, private val context: Context) {
 
   /** * Message forwarding ***/
 
-  private def forward(messageType: InteractionType, metaMessage: Message, to: String): Unit = context.handle(QakMessage(messageType, metaMessage, name, to))
+  private def forward(messageType: InteractionType, metaMessage: Message, to: AbstractQActor): Unit = to.accept(QakMessage(messageType, metaMessage, this, to))
 
   case class InstantForwarder(metaMessage: Message, messageType: InteractionType) {
-    def to(to: String): Unit = forward(messageType, metaMessage, to)
+    def to(to: AbstractQActor): Unit = forward(messageType, metaMessage, to)
   }
 
-  protected final def emit(metaMessage: Message): Unit = forward(Event, metaMessage, "none")
+  protected final def emit(metaMessage: Message): Unit = forward(Event, metaMessage, ExternalQActor("none", context))
 
   protected final def dispatch(metaMessage: Message): InstantForwarder = InstantForwarder(metaMessage, Dispatch)
 
@@ -226,17 +228,15 @@ abstract class QActor(final val name: String, private val context: Context) {
   }
 
   protected final def in(duration: Duration) = new {
-    private def forward(messageType: InteractionType, metaMessage: Message, to: String): Unit = context.handle(QakMessage(messageType, metaMessage, name, to))
-
     case class DelayedForwarder(in: Duration, metaMessage: Message, messageType: InteractionType) {
-      def to(to: String): Cancellable = {
+      def to(to: AbstractQActor): Cancellable = {
         val future = timerExecutor.schedule(() => forward(messageType, metaMessage, to), in)
         () => future.cancel(false)
       }
     }
 
     def emit(metaMessage: Message): Cancellable = {
-      val future = timerExecutor.schedule(() => forward(Event, metaMessage, "none"), duration)
+      val future = timerExecutor.schedule(() => forward(Event, metaMessage, ExternalQActor("none", context)), duration)
       () => future.cancel(false)
     }
 
@@ -248,17 +248,16 @@ abstract class QActor(final val name: String, private val context: Context) {
   }
 
   protected final def every(duration: Duration) = new {
-    private def forward(messageType: InteractionType, metaMessage: Message, to: String): Unit = context.handle(QakMessage(messageType, metaMessage, name, to))
 
     case class FixedTimeForwarder(every: Duration, metaMessage: Message, messageType: InteractionType) {
-      def to(to: String): Cancellable = {
+      def to(to: AbstractQActor): Cancellable = {
         val future = timerExecutor.scheduleAtFixedRate(() => forward(messageType, metaMessage, to), every, every)
         () => future.cancel(false)
       }
     }
 
     def emit(metaMessage: Message): Cancellable = {
-      val future = timerExecutor.scheduleAtFixedRate(() => forward(Event, metaMessage, "none"), duration, duration)
+      val future = timerExecutor.scheduleAtFixedRate(() => forward(Event, metaMessage, ExternalQActor("none", context)), duration, duration)
       () => future.cancel(false)
     }
 
@@ -288,9 +287,13 @@ abstract class QActor(final val name: String, private val context: Context) {
 
   protected final def wait(duration: Duration): Unit = Thread.sleep(duration.toMillis)
 
-  protected final def sender: String = currentMessage match {
+  protected final def sender: AbstractQActor = currentMessage match {
     case Some(value) => value.from
-    case None => ""
+    case None => new AbstractQActor {
+      override def name: String = "none"
+
+      override def accept(message: QakMessage): Unit = {}
+    }
   }
 
   protected final def stackOfStates: Seq[State] = stateStack.toSeq

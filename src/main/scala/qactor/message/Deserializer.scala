@@ -3,6 +3,8 @@ package qactor.message
 import java.lang.reflect.Modifier
 
 import org.reflections.Reflections
+import qactor.ExternalQActor
+import qactor.context.Context
 
 import scala.language.postfixOps
 import scala.util.Try
@@ -63,7 +65,7 @@ object Deserializer {
     }
   }
 
-  def apply(str: String): Option[QakMessage] = {
+  def apply(str: String, from:Context): Option[QakMessage] = {
     import InteractionType._
     Try {
       val msg = str.drop(4).dropRight(1)
@@ -79,7 +81,7 @@ object Deserializer {
         override def id: String = inf(0)
 
         override def params: Seq[Any] = par
-      }, inf(2), inf(3))
+      }, ExternalQActor(inf(2), from), ExternalQActor(inf(3), from))
       Some(msgTmp.copy(message = deserializeMeta(msgTmp)))
     }.getOrElse(None)
   }

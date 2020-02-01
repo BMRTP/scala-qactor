@@ -32,24 +32,9 @@ abstract class MatrixPlanner(val robotInitialPosition: ((Int, Int), Pole), val r
   def nextCellToExplore: Option[(Int, Int)]
 
 
-  def findPath(source: (Int, Int), target: (Int, Int), validCell: MapObject => Boolean, l: Int, maxL: Int): Seq[(Int, Int)] = {
-    if (maxL == l) {
-      Seq()
-    } else if (source == target) {
-      Seq(source)
-    } else {
-      val path = source.neighbors.filter(p => validCell(getMapAt(p))).iterator.map(p => findPath(p, target, validCell, l + 1, maxL))
-        .filter(_.nonEmpty).toSeq.sortBy(_.size).headOption.getOrElse(Seq())
-      if (path.nonEmpty) {
-        Seq(source) ++ path
-      } else {
-        Seq()
-      }
-    }
-  }
+  def getPlan(source: ((Int, Int), Pole), target: ((Int, Int), Pole), validCell: MapObject => Boolean): Option[Seq[String]] = {
 
-  def getRotationPlan(currentDirection: Pole, targetDirection: Pole): Seq[String] =
-    currentDirection match {
+    def getRotationPlan(currentDirection: Pole, targetDirection: Pole): Seq[String] = currentDirection match {
       case North => targetDirection match {
         case North => Seq()
         case South => Seq("a", "a")
@@ -76,54 +61,93 @@ abstract class MatrixPlanner(val robotInitialPosition: ((Int, Int), Pole), val r
       }
     }
 
-  def getRotationPlan(source: (Int, Int), target: (Int, Int), currentDirection: Pole): (Seq[String], Pole) = {
-    val targetDirection = source match {
-      case (x, y) => target match {
-        case (x1, y1) if x1 == x && y1 < y => North
-        case (x1, y1) if x1 == x && y1 > y => South
-        case (x1, y1) if x1 < x && y1 == y => West
-        case (x1, y1) if x1 > x && y1 == y => East
+    def getRotationPlan2(source: (Int, Int), target: (Int, Int), currentDirection: Pole): (Seq[String], Pole) = {
+      val targetDirection = source match {
+        case (x, y) => target match {
+          case (x1, y1) if x1 == x && y1 < y => North
+          case (x1, y1) if x1 == x && y1 > y => South
+          case (x1, y1) if x1 < x && y1 == y => West
+          case (x1, y1) if x1 > x && y1 == y => East
+        }
+      }
+      (getRotationPlan(currentDirection, targetDirection), targetDirection)
+    }
+
+    def findPaths(source: (Int, Int), target: (Int, Int), validCell: MapObject => Boolean): Seq[Seq[(Int, Int)]] = {
+      if (source == target) {
+        Seq(Seq())
+      } else {
+        val indexMap: scala.collection.mutable.Map[(Int, Int), Int] = scala.collection.mutable.Map()
+        indexMap.addOne(source, 0)
+        var found = false
+        var index = 0
+        while (!found) {
+          val possibleCells = indexMap.toSeq.collect({
+            case (tuple, i) if i == index => tuple
+          }).flatMap(_.neighbors).distinct.filter(p => validCell(getMapAt(p)) && !indexMap.isDefinedAt(p))
+          if (possibleCells.contains(target)) {
+            indexMap.addOne(target, index + 1)
+            found = true
+          } else {
+            possibleCells.foreach(p => {
+              indexMap.addOne(p, index + 1)
+            })
+            index = index + 1
+          }
+        }
+
+        def getPaths(indexMap: Map[(Int, Int), Int], index: Int, myPos:(Int,Int)): Seq[Seq[(Int, Int)]] = {
+          if (!indexMap.exists(_._2 == index)) {
+            Seq(Seq())
+          } else {
+            for ((pos, _) <- indexMap.filter(p => p._2 == index && (p._1.neighbors.contains(myPos) || myPos == p._1)).toSeq;
+                 path <- getPaths(indexMap, index + 1, pos)) yield pos +: path
+          }
+        }
+
+        getPaths(indexMap.toMap, 0, source)
       }
     }
-    (getRotationPlan(currentDirection, targetDirection), targetDirection)
+
+    def pathToPlan(path: Seq[(Int, Int)], sourceRotation: Pole, destRotation: Pole): Seq[String] = path match {
+      case s if s.isEmpty => getRotationPlan(sourceRotation, destRotation)
+      case s =>
+        s.drop(1).foldLeft(((path.head, sourceRotation), Seq[String]())) {
+          case (((currentCell, currentRotation), partialPlan), targetCell) =>
+            getRotationPlan2(currentCell, targetCell, currentRotation) match {
+              case (res, newRotation) => ((targetCell, newRotation), partialPlan ++ res ++ Seq("w"))
+            }
+        } match {
+          case ((_, currentRotation), plan) => plan ++ getRotationPlan(currentRotation, destRotation)
+        }
+    }
+
+    findPaths(source._1, target._1, validCell).map(path => {
+      pathToPlan(path, source._2, target._2)
+    }).sortBy(_.size).headOption
   }
 
-  def pathToPlan(path: Seq[(Int, Int)]): (Seq[String], Pole) = path match {
-    case s if s.isEmpty => (Seq(), currentPosition._2)
-    case s =>
-      val res = s.drop(1).foldLeft((currentPosition, Seq[String]())) {
-        case (data, p) =>
-          val result = getRotationPlan(data._1._1, p, data._1._2)
-          val ret = ((p, result._2), data._2 ++ result._1 ++ Seq("w"))
-          ret
-      }
-      (res._2, res._1._2)
-  }
+  def generatePlanForHome(): Seq[String] = generateSafePlanFor(robotInitialPosition)
 
-  def generatePlanForHome(): Seq[String] = generateSafePlanFor(robotInitialPosition._1, robotInitialPosition._2)
-
-  def generatePlanForPlasticBox(): Seq[String] = generateSafePlanFor(robotEmptyPosition._1, robotEmptyPosition._2)
-
+  def generatePlanForPlasticBox(): Seq[String] = generateSafePlanFor(robotEmptyPosition)
 
   def generatePlanForExplore(): Seq[String] =
     nextCellToExplore match {
-      case Some(target) =>
-        val path = findPath(currentPosition._1, target, {
-          case Unknown | Clean | Obstacle(_, false) => true
-          case _ => false
-        }, 0, 10)
-        pathToPlan(path)._1
+      case Some(target) => getPlan(currentPosition, (target, North), {
+        case Unknown | Clean | Obstacle(_, false) => true
+        case _ => false
+      }).getOrElse(Seq()).reverse.dropWhile(m => m == "a" || m == "d").reverse //drop last rotation if present
       case None => Seq()
     }
 
-  def generateSafePlanFor(pos: (Int, Int), direction: Pole): Seq[String] = {
-    var path = findPath(currentPosition._1, pos, v => v == Clean, 0, 15)
-    if(path.isEmpty && pos != currentPosition._1) {
-      path = findPath(currentPosition._1, pos, v => v == Clean || v == Unknown, 0, 15)
-    }
-    val plan = pathToPlan(path)
-    plan._1 ++ getRotationPlan(plan._2, direction)
-  }
+  def generateSafePlanFor(target: ((Int, Int), Pole)): Seq[String] =
+    getPlan(currentPosition, target, {
+      case Clean => true
+      case _ => false
+    }).getOrElse(getPlan(currentPosition, target, {
+      case Clean | Unknown => true
+      case _ => false
+    }).getOrElse(Seq()))
 
   def setObjectAhead(obj: MapObject): Unit = setMapAt(aheadPosition, obj)
 
@@ -149,11 +173,11 @@ abstract class MatrixPlanner(val robotInitialPosition: ((Int, Int), Pole), val r
   def printMatrix(): Unit = {
     val rows = map.map(_._1._2).max
     val columns = map.map(_._1._1).max
-    var r = 0
-    var c = 0
+    var r = map.map(_._1._2).min
+    var c = map.map(_._1._1).min
     println("MAP:")
     while (r <= rows) {
-      c = 0
+      c = map.map(_._1._1).min
       while (c <= columns) {
         val v = getMapAt((c, r))
         val char = v match {

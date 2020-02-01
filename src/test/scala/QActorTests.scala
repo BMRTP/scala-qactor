@@ -44,7 +44,9 @@ class QActorTests extends FunSuite {
       emit {
         Pong()
       }
-    } timeout ((500 millis) -> waiting)
+    } timeout ((500 millis) -> {
+      transit to waiting
+    })
 
 
     def waiting: State = onMsg {
@@ -150,7 +152,9 @@ class QActorTests extends FunSuite {
           println("received ping")
           wait(2 second)
           transit to ok
-      } timeout ((2 second) -> notOk)
+      } timeout ((2 second) -> {
+        transit to notOk
+      })
 
       def ok: State = onEnter {
         println("ok")
@@ -165,7 +169,9 @@ class QActorTests extends FunSuite {
         case Ping() =>
           assert(false)
           transit to close
-      } timeout ((1 second) -> ok2)
+      } timeout ((1 second) -> {
+        transit to ok2
+      })
 
       def ok2: State = onEnter {
         println("ok")
