@@ -1,11 +1,12 @@
 package prove
 
 import prove.Messages._
-import prove.PropertyImplicits._
 import qactor.State._
 import qactor.context.TcpContext
 import qactor.message.Deserializer
 import qactor.{ExternalQActor, QActor, State}
+import supports.properties.PropertyImplicits._
+import supports.properties.{CoapObservableProperties, Property}
 
 import scala.concurrent.duration._
 import scala.language.postfixOps
@@ -36,7 +37,7 @@ object DetectorApp extends App {
 
     val MAX_BOTTLE = 1
     val SpaceAvailable: Property[Int] = observableProperty(MAX_BOTTLE, _.toString, _.toInt)
-    val currentTask: Property[String] = observableProperty("") //TODO
+    val currentTask: Property[String] = observableProperty("")
     val waitingForSupervisor: Property[Boolean] = observableProperty(false, _.toString, _.toBoolean)
     val RoomMap: Property[String] = observableProperty("")
 
@@ -118,7 +119,6 @@ object DetectorApp extends App {
       if (SpaceAvailable >= MAX_BOTTLE) {
         transit to previous //return to caller
       } else {
-
         val plan = planner.generatePlanForPlasticBox()
         println(planner.mapString)
         if (plan.isEmpty) { //I'm at plstaticBox
@@ -242,6 +242,14 @@ object DetectorApp extends App {
         transit to previous
         unstash()
     }
+
+    override protected def stateChanging(oldState: State, newState: State): Unit = currentTask.set(newState match {
+      case `exploring` => "exploring"
+      case `terminating` => "terminating"
+      case `goHome` => "suspending"
+      case `idle` => "idle"
+      case _ => currentTask
+    })
   }
 
   Detector.start()

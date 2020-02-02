@@ -107,4 +107,9 @@ case class State(name: String, enterAction: Option[() => Unit],
 
     s3.copy(name = this.name + " and " + toMerge.name)
   }
+
+  override def equals(obj: Any): Boolean = obj match { //TODO not the cleanest solution
+    case state: State => this.name == state.name
+    case _ => false
+  }
 }
