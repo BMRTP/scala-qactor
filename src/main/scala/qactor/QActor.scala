@@ -79,7 +79,7 @@ abstract class QActor(final val name: String, private val context: Context) exte
                 gotoNextStateIfPresent()
               case _ =>
                 currentMessage = None
-                println(name + ": " + m + " was dropped")
+                println(name + ": " + m + " was dropped on state " + currentState)
             }
         }
       }

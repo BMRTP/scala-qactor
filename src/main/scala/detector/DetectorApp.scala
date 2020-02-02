@@ -1,6 +1,7 @@
-package prove
+package detector
 
-import prove.Messages._
+import detector.Messages._
+import detector.planner._
 import qactor.State._
 import qactor.context.TcpContext
 import qactor.message.Deserializer
@@ -13,7 +14,7 @@ import scala.language.postfixOps
 
 object DetectorApp extends App {
 
-  Deserializer.registerAll("prove.Messages")
+  Deserializer.registerAll("detector.Messages")
 
   val ctxDetector = TcpContext(8023)
   val ctxRobot = ctxDetector.extendTo("localhost", 8018)
@@ -28,15 +29,14 @@ object DetectorApp extends App {
     robotInitialPosition = ((0, 0), South),
     robotEmptyPosition = ((0, 0), North)) with DummyMatrixPlanner
 
-
   object Detector extends QActor(ctxDetector) with CoapObservableProperties {
 
-    override def coapRoot: String = name
+    override def coapRoot: String = "detector"
 
     override def coapServer: String = "coap://localhost:5683"
 
-    val MAX_BOTTLE = 1
-    val SpaceAvailable: Property[Int] = observableProperty(MAX_BOTTLE, _.toString, _.toInt)
+    val MAX_BOTTLES = 1
+    val SpaceAvailable: Property[Int] = observableProperty(MAX_BOTTLES, _.toString, _.toInt)
     val currentTask: Property[String] = observableProperty("")
     val waitingForSupervisor: Property[Boolean] = observableProperty(false, _.toString, _.toBoolean)
     val RoomMap: Property[String] = observableProperty("")
@@ -94,7 +94,7 @@ object DetectorApp extends App {
     }
 
     def terminating: State = onEnter {
-      if (SpaceAvailable < MAX_BOTTLE) {
+      if (SpaceAvailable < MAX_BOTTLES) {
         transit to emptyDetector
       } else if (planner.currentPosition != planner.robotInitialPosition) {
         transit to goHome
@@ -116,14 +116,14 @@ object DetectorApp extends App {
     }
 
     def emptyDetector: State = stepBackIfNecessary and onEnter {
-      if (SpaceAvailable >= MAX_BOTTLE) {
+      if (SpaceAvailable >= MAX_BOTTLES) {
         transit to previous //return to caller
       } else {
         val plan = planner.generatePlanForPlasticBox()
         println(planner.mapString)
         if (plan.isEmpty) { //I'm at plstaticBox
           println("Empting...")
-          request(ThrowAway(MAX_BOTTLE - SpaceAvailable)) to plasticbox
+          request(ThrowAway(MAX_BOTTLES - SpaceAvailable)) to plasticbox
           transit to ("wait for throwed" onReply {
             case Throwed(count) if count <= 0 =>
               println("Failed. Wait for supervisor")
@@ -243,13 +243,18 @@ object DetectorApp extends App {
         unstash()
     }
 
-    override protected def stateChanging(oldState: State, newState: State): Unit = currentTask.set(newState match {
-      case `exploring` => "exploring"
-      case `terminating` => "terminating"
-      case `goHome` => "suspending"
-      case `idle` => "idle"
-      case _ => currentTask
-    })
+    override protected def stateChanging(oldState: State, newState: State): Unit = {
+      val task: String = newState match {
+        case s if s == exploring => "exploring"
+        case s if s == terminating => "terminating"
+        case s if s == goHome => "suspending"
+        case s if s == idle => "idle"
+        case _ => currentTask
+      }
+      if (task != currentTask.get) {
+        currentTask.set(task)
+      }
+    }
   }
 
   Detector.start()

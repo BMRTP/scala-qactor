@@ -1,4 +1,4 @@
-package prove
+package detector.planner
 
 import utils.ExtensionMethods._
 

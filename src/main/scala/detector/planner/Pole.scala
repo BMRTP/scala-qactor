@@ -1,4 +1,4 @@
-package prove
+package detector.planner
 
 sealed trait Pole {
   def left: Pole = this match {

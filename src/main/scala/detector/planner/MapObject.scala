@@ -1,4 +1,4 @@
-package prove
+package detector.planner
 
 trait MapObject //
 case class Obstacle(name: String, isStatic: Boolean) extends MapObject //

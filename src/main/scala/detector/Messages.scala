@@ -1,4 +1,4 @@
-package prove
+package detector
 
 import qactor.message.Message
 
