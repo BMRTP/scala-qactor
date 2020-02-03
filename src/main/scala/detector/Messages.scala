@@ -37,9 +37,9 @@ object Messages {
 
 
   //Auto-message
-  case class ExecutePlan(plan: Seq[String]) extends Message
-
   case class ExecuteMove(move: String) extends Message
+
+  case class ExecutePlan() extends Message
 
   case class RotationDone() extends Message
 

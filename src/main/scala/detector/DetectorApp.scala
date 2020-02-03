@@ -59,13 +59,9 @@ object DetectorApp extends App {
       resetStash()
       resetStackOfStates()
       println("Waiting for a command...")
-    } onDispatch {
-      case Explore(_) => transit to exploring
-      case Terminate(_) => transit to terminating
-      case Suspend(_) => transit to suspend
-    }
+    } and preemptive
 
-    def exploring: State = stepBackIfNecessary and preemptive and onEnter {
+    def exploring: State = stepBackIfNecessary and onEnter {
       if (beforeEmptyPos.isDefined) {
         println("Returning to beforeEmptyPos...")
         transit to returnToBeforeEmptyPos
@@ -85,7 +81,7 @@ object DetectorApp extends App {
             println("Going to: " + planner.nextCellToExplore)
             if (plan.nonEmpty) {
               println("Exploring...")
-              dispatch(ExecutePlan(plan)) to mySelf
+              currentPlan = plan
               transit to executingPlan
             } else {
               transit to terminating
@@ -106,7 +102,7 @@ object DetectorApp extends App {
       }
     }
 
-    def suspend: State = onEnter {
+    def suspending: State = onEnter {
       goHome(idle)
     }
 
@@ -116,7 +112,8 @@ object DetectorApp extends App {
         transit to idle
       } else {
         println("Going home...")
-        dispatch(ExecutePlan(plan)) to mySelf
+        currentPlan = plan
+        lastObstacle = None //forget about it
         transit to executingPlan
       }
     }
@@ -148,19 +145,20 @@ object DetectorApp extends App {
           } timeout((4 second) -> { transit to previous }))
         } else {
           println("Going to plastixBox...")
-          dispatch(ExecutePlan(plan)) to mySelf
+          currentPlan = plan
+          lastObstacle = None //forget about it
           transit to executingPlan
         }
       }
     }
 
     def returnToBeforeEmptyPos: State = onEnter {
-      if (beforeEmptyPos.isDefined) {
-        val plan = planner.generateSafePlanFor(beforeEmptyPos.get._1, beforeEmptyPos.get._2)
-        dispatch(ExecutePlan(plan)) to mySelf
+      if (beforeEmptyPos.isDefined && beforeEmptyPos.get != planner.currentPosition) {
+        currentPlan = planner.generateSafePlanFor(beforeEmptyPos.get._1, beforeEmptyPos.get._2)
+        lastObstacle = None //forget about it
         transit to executingPlan
-        beforeEmptyPos = None
       } else {
+        beforeEmptyPos = None
         transit to previous
       }
     }
@@ -197,16 +195,20 @@ object DetectorApp extends App {
       }
     }
 
-    def executingPlan: State = stepBackIfNecessary and stashing and onMsg {
-      case ExecutePlan(plan) if plan.isEmpty || lastObstacle.isDefined =>
-        transit to previous
+    var currentPlan: Seq[String] = Seq[String]()
 
-      case ExecutePlan(plan) => plan match {
-        case move :: updatedPlan =>
-          dispatch(ExecuteMove(move)) to mySelf
-          transit to executeMove
-          dispatch(ExecutePlan(updatedPlan)) to mySelf
-      }
+    def executingPlan: State = stepBackIfNecessary and stashing and preemptive and onEnter {
+      dispatch(ExecutePlan()) to mySelf
+    } onDispatch {
+      case ExecutePlan() if currentPlan.isEmpty || lastObstacle.isDefined =>
+        transit to previous
+      case ExecutePlan() =>
+        currentPlan match {
+          case move :: updatedPlan =>
+            dispatch(ExecuteMove(move)) to mySelf
+            transit to executeMove
+            currentPlan = updatedPlan
+        }
     }
 
     def executeMove: State = stepBackIfNecessary and stashing and onDispatch {
@@ -223,11 +225,7 @@ object DetectorApp extends App {
         in(500 millis) reply RotationDone() to mySelf
         transit to waitMove
       case MoveDone() =>
-        println("Movedone")
         transit to previous
-
-      case Terminate(_) => preempt = Some(terminating)
-      case Suspend(_) => preempt = Some(suspend)
     }
 
     def waitMove: State = stashing and onReply {
@@ -262,24 +260,17 @@ object DetectorApp extends App {
       unstash()
     }
 
-    var preempt: Option[State] = None
-
-    def preemptive: State = onEnter {
-      preempt match {
-        case Some(preemption) =>
-          transit to preemption
-          preempt = None
-          interruptAndTransit()
-        case None =>
-      }
+    def preemptive: State = onDispatch {
+      case Terminate(_) => transit to terminating
+      case Suspend(_) => transit to suspending
+      case Explore(_) => transit to exploring
     }
 
     override protected def stateChanging(oldState: State, newState: State): Unit = {
-      println("State: " + newState)
       val task: String = newState match {
         case s if s == exploring => "exploring"
         case s if s == terminating => "terminating"
-        case s if s == suspend => "suspending"
+        case s if s == suspending => "suspending"
         case s if s == idle => "idle"
         case _ => currentTask
       }
