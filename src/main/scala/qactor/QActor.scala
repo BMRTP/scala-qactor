@@ -307,4 +307,9 @@ abstract class QActor(final val name: String, private val context: Context) exte
   protected final def stackOfStates: Seq[State] = stateStack.toSeq
 
   protected final def resetStackOfStates(): Unit = stateStack.clear()
+
+  protected final def resetStash(): Unit = stashed.clear()
+
+
+  protected final def printStash(): Unit = stashed.foreach(println)
 }

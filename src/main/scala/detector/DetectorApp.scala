@@ -4,7 +4,8 @@ import detector.Messages._
 import detector.planner._
 import qactor.State._
 import qactor.context.TcpContext
-import qactor.message.Deserializer
+import qactor.message.InteractionType._
+import qactor.message.{Deserializer, QakMessage}
 import qactor.{ExternalQActor, QActor, State}
 import supports.properties.PropertyImplicits._
 import supports.properties.{CoapObservableProperties, Property}
@@ -16,7 +17,7 @@ object DetectorApp extends App {
 
   Deserializer.registerAll("detector.Messages")
 
-  val ctxDetector = TcpContext(8023)
+  val ctxDetector = TcpContext(8022)
   val ctxRobot = ctxDetector.extendTo("localhost", 8018)
   val ctxPlasticBox = ctxDetector.extendTo("localhost", 8016)
 
@@ -48,22 +49,23 @@ object DetectorApp extends App {
 
     override protected def initialState: State = onEnter {
       dispatch(Cmd("a")) to smartrobot
-      wait(4 seconds)
+      wait(1 seconds)
       dispatch(Cmd("d")) to smartrobot
-      wait(4 seconds)
-      transit to exploring
+      wait(1 seconds)
+      transit to idle
     }
 
     def idle: State = onEnter {
+      resetStash()
       resetStackOfStates()
       println("Waiting for a command...")
     } onDispatch {
       case Explore(_) => transit to exploring
       case Terminate(_) => transit to terminating
-      case Suspend(_) => transit to goHome
+      case Suspend(_) => transit to suspend
     }
 
-    def exploring: State = stepBackIfNecessary and onEnter {
+    def exploring: State = stepBackIfNecessary and preemptive and onEnter {
       if (beforeEmptyPos.isDefined) {
         println("Returning to beforeEmptyPos...")
         transit to returnToBeforeEmptyPos
@@ -97,17 +99,21 @@ object DetectorApp extends App {
       if (SpaceAvailable < MAX_BOTTLES) {
         transit to emptyDetector
       } else if (planner.currentPosition != planner.robotInitialPosition) {
-        transit to goHome
+        goHome(idle)
       } else {
         println("Terminated.")
         transit to idle
       }
     }
 
-    def goHome: State = onEnter {
+    def suspend: State = onEnter {
+      goHome(idle)
+    }
+
+    def goHome(after: State): Unit = {
       val plan = planner.generatePlanForHome()
       if (plan.isEmpty) {
-        transit to previous
+        transit to idle
       } else {
         println("Going home...")
         dispatch(ExecutePlan(plan)) to mySelf
@@ -119,12 +125,13 @@ object DetectorApp extends App {
       if (SpaceAvailable >= MAX_BOTTLES) {
         transit to previous //return to caller
       } else {
+        printStash()
         val plan = planner.generatePlanForPlasticBox()
         println(planner.mapString)
         if (plan.isEmpty) { //I'm at plstaticBox
           println("Empting...")
           request(ThrowAway(MAX_BOTTLES - SpaceAvailable)) to plasticbox
-          transit to ("wait for throwed" onReply {
+          transit to (stashing and "wait for throwed" onReply {
             case Throwed(count) if count <= 0 =>
               println("Failed. Wait for supervisor")
               waitingForSupervisor.set(true)
@@ -161,12 +168,12 @@ object DetectorApp extends App {
     def stepBackIfNecessary: State = onEnter {
       if (stepBackNeeded) {
         request(BackStep(lastStepFailTime - 20)) to smartrobot
-        transit to ("wait back step done" onMsg {
+        transit to (stashing and "wait back step done" onMsg {
           case StepDone(_) =>
             transit to previous
             stepBackNeeded = false
             lastObstacle = None
-        })
+        } and stashing)
         interruptAndTransit()
       }
     }
@@ -176,7 +183,7 @@ object DetectorApp extends App {
         request(Grab("x")) to grabber
         planner.setObjectAhead(Clean)
         RoomMap.set(planner.mapString)
-        transit to ("wait grabbed" onMsg {
+        transit to (stashing and "wait grabbed" onMsg {
           case Grabbed(success) =>
             if (success) {
               SpaceAvailable.set(SpaceAvailable - 1)
@@ -190,9 +197,8 @@ object DetectorApp extends App {
       }
     }
 
-    def executingPlan: State = onMsg {
+    def executingPlan: State = stepBackIfNecessary and stashing and onMsg {
       case ExecutePlan(plan) if plan.isEmpty || lastObstacle.isDefined =>
-        unstash()
         transit to previous
 
       case ExecutePlan(plan) => plan match {
@@ -201,34 +207,40 @@ object DetectorApp extends App {
           transit to executeMove
           dispatch(ExecutePlan(updatedPlan)) to mySelf
       }
-
-      case _ => stash()
     }
 
-    //when transit to previous should be necessary to stepback if lastObstacle is defined
-    def executeMove: State = stepBackIfNecessary and onDispatch {
+    def executeMove: State = stepBackIfNecessary and stashing and onDispatch {
       case ExecuteMove(move) if move == "w" =>
         lastObstacle = None
         request(Step(330)) to smartrobot
-        wait(330 millis)
+        transit to waitMove
       case ExecuteMove(move) if move == "a" || move == "d" =>
         move match {
           case "a" => planner.rotateLeft()
           case "d" => planner.rotateRight()
         }
         dispatch(Cmd(move)) to smartrobot
-        wait(500 millis)
+        in(500 millis) reply RotationDone() to mySelf
+        transit to waitMove
+      case MoveDone() =>
+        println("Movedone")
         transit to previous
-        unstash()
-      case _ => stash()
-    } onReply {
+
+      case Terminate(_) => preempt = Some(terminating)
+      case Suspend(_) => preempt = Some(suspend)
+    }
+
+    def waitMove: State = stashing and onReply {
+      case RotationDone() =>
+        dispatch(MoveDone()) to mySelf
+        transit to previous
       case StepDone(_) =>
         if (lastObstacle.isEmpty) {
           planner.moveAhead()
           RoomMap.set(planner.mapString)
         }
+        dispatch(MoveDone()) to mySelf
         transit to previous
-        unstash()
       case StepFail(ms) =>
         lastStepFailTime = ms
         request(GetObstacleType("x")) to obstacleclassifier
@@ -239,15 +251,35 @@ object DetectorApp extends App {
         lastObstacle = Some(obstacle)
         stepBackNeeded = obstacle.isStatic
         println("Found obstacle: " + name)
+        dispatch(MoveDone()) to mySelf
         transit to previous
-        unstash()
+    }
+
+    def stashing: State = onDrop {
+      case QakMessage(Event, _, _, _) => //drop
+      case _ => stash()
+    } onExit {
+      unstash()
+    }
+
+    var preempt: Option[State] = None
+
+    def preemptive: State = onEnter {
+      preempt match {
+        case Some(preemption) =>
+          transit to preemption
+          preempt = None
+          interruptAndTransit()
+        case None =>
+      }
     }
 
     override protected def stateChanging(oldState: State, newState: State): Unit = {
+      println("State: " + newState)
       val task: String = newState match {
         case s if s == exploring => "exploring"
         case s if s == terminating => "terminating"
-        case s if s == goHome => "suspending"
+        case s if s == suspend => "suspending"
         case s if s == idle => "idle"
         case _ => currentTask
       }

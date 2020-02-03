@@ -43,4 +43,6 @@ object Messages {
 
   case class RotationDone() extends Message
 
+  case class MoveDone() extends Message
+
 }
