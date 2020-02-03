@@ -41,4 +41,6 @@ object Messages {
 
   case class ExecuteMove(move: String) extends Message
 
+  case class RotationDone() extends Message
+
 }

@@ -12,6 +12,7 @@ trait CoapObservableProperties extends ObservableProperties[String] {
 
   private val coapSupport = CoapResourceSupport(coapRoot, coapServer)
   private val executor = Executors.newCachedThreadPool()
+  private val singleExecutor = Executors.newSingleThreadExecutor()
 
   case class CoapProperty[T](name: String, init: T, serialize: T => String, deserialize: String => T) extends Property[T] {
     private var value: T = init
@@ -64,7 +65,7 @@ trait CoapObservableProperties extends ObservableProperties[String] {
       this.value = value
       onChangeBody(this)
       if (synchronized) {
-        executor.execute(() => {
+        singleExecutor.execute(() => {
           if (!coapSupport.setProperty(name, serialize(value))) {
             initialize()
           }
@@ -76,5 +77,8 @@ trait CoapObservableProperties extends ObservableProperties[String] {
   override def observableProperty[T](name: String, init: T)(implicit serialize: T => String, deserialize: String => T): Property[T] =
     CoapProperty(name, init, serialize, deserialize)
 
-  def close(): Unit = executor.shutdown()
+  def close(): Unit = {
+    executor.shutdown()
+    singleExecutor.shutdown()
+  }
 }

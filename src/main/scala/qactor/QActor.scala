@@ -78,8 +78,16 @@ abstract class QActor(final val name: String, private val context: Context) exte
                 currentMessage = None
                 gotoNextStateIfPresent()
               case _ =>
-                currentMessage = None
-                println(name + ": " + m + " was dropped on state " + currentState)
+                currentState.onMessageDropAction match {
+                  case Some(dropBody) if dropBody isDefinedAt m =>
+                    breakable {
+                      dropBody(m)
+                    }
+                    currentMessage = None
+                    gotoNextStateIfPresent()
+                  case _ => println(name + ": " + m + " was dropped on state " + currentState)
+                    currentMessage = None
+                }
             }
         }
       }

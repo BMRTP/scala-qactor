@@ -16,6 +16,8 @@ object State {
 
   def onQakMsg(body: PartialFunction[QakMessage, Unit])(implicit name: sourcecode.Name): State = name.value onQakMsg body
 
+  def onDrop(body: PartialFunction[QakMessage, Unit])(implicit name: sourcecode.Name): State = name.value onDrop body
+
   def onMsg(body: PartialFunction[Message, Unit])(implicit name: sourcecode.Name): State = name.value onMsg body
 
   def onInteraction(body: PartialFunction[(InteractionType, Message), Unit])(implicit name: sourcecode.Name): State = name.value onInteraction body
@@ -30,7 +32,7 @@ object State {
 
   def timeout(duration: (Duration, Lazy[Unit]))(implicit name: sourcecode.Name): State = name.value timeout duration
 
-  implicit class stringToEmptyState(v: String) extends State(v, None, None, None, None)
+  implicit class stringToEmptyState(v: String) extends State(v, None, None, None, None, None)
 
   implicit class Lazy[T](wrp: => T) {
     lazy val value: T = wrp
@@ -42,6 +44,7 @@ object State {
 case class State(name: String, enterAction: Option[() => Unit],
                  exitAction: Option[() => Unit],
                  onMessageAction: Option[PartialFunction[QakMessage, Unit]],
+                 onMessageDropAction: Option[PartialFunction[QakMessage, Unit]],
                  timeoutV: Option[(Duration, Lazy[Unit])]) {
 
   override def toString: String = name
@@ -87,6 +90,10 @@ case class State(name: String, enterAction: Option[() => Unit],
     case (Reply, payload) if body.isDefinedAt(payload) => body(payload)
   }
 
+  def onDrop(body: PartialFunction[QakMessage, Unit]): State = this.copy(onMessageDropAction = this.onMessageDropAction match {
+    case Some(value) => Some(value.orElse(body))
+    case None => Some(body)
+  })
 
   def and(toMerge: State): State = {
 
@@ -105,7 +112,12 @@ case class State(name: String, enterAction: Option[() => Unit],
       case None => s2
     }
 
-    s3.copy(name = this.name + " and " + toMerge.name)
+    val s4 = toMerge.onMessageDropAction match {
+      case Some(value) => s3.onDrop(value)
+      case None => s3
+    }
+
+    s4.copy(name = this.name + " and " + toMerge.name)
   }
 
   override def equals(obj: Any): Boolean = obj match { //TODO not the cleanest solution
